@@ -16,6 +16,9 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) market-briefing/1
 TIMEOUT = 20
 
 BINANCE = "https://api.binance.com"
+# 미국 IP(깃허브 Actions 등)에서 api.binance.com 은 HTTP 451 로 막힌다.
+# data-api.binance.vision 은 바이낸스 공식 시세 전용 미러라 지역 차단이 없고 응답 형식이 같다.
+BINANCE_HOSTS = [BINANCE, "https://data-api.binance.vision"]
 BITGET = "https://api.bitget.com"
 COINGECKO = "https://api.coingecko.com/api/v3"
 YAHOO_HOSTS = ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]
@@ -33,6 +36,28 @@ def _get(url, params=None, tries=3, sleep=1.2):
             last = repr(e)
         time.sleep(sleep * (i + 1))
     raise RuntimeError("GET failed %s :: %s" % (url, last))
+
+
+def _binance_get(path, params=None):
+    """바이낸스 본 주소 -> 시세 미러 순으로 시도. 451(지역차단)은 재시도 없이 바로 다음 주소."""
+    errors = []
+    for i, host in enumerate(BINANCE_HOSTS):
+        try:
+            r = requests.get(host + path, params=params, headers=UA, timeout=TIMEOUT)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code in (451, 403):
+                errors.append("%s HTTP %s" % (host, r.status_code))
+                continue
+        except Exception as e:
+            errors.append("%s %r" % (host, e))
+            continue
+        # 그 밖의 오류는 기존 재시도 로직으로
+        try:
+            return _get(host + path, params)
+        except Exception as e:
+            errors.append(str(e))
+    raise RuntimeError("binance 전 주소 실패 :: " + " | ".join(errors))
 
 
 # ------------------------------------------------------------------ 지표 계산
@@ -112,8 +137,8 @@ def atr(highs, lows, closes, period=14):
 
 # ------------------------------------------------------------------ 코인
 def binance_klines(symbol, interval="1h", limit=300):
-    raw = _get(BINANCE + "/api/v3/klines",
-               {"symbol": symbol, "interval": interval, "limit": limit})
+    raw = _binance_get("/api/v3/klines",
+                       {"symbol": symbol, "interval": interval, "limit": limit})
     return {
         "open": [float(k[1]) for k in raw],
         "high": [float(k[2]) for k in raw],
@@ -125,7 +150,7 @@ def binance_klines(symbol, interval="1h", limit=300):
 
 
 def binance_ticker(symbol):
-    d = _get(BINANCE + "/api/v3/ticker/24hr", {"symbol": symbol})
+    d = _binance_get("/api/v3/ticker/24hr", {"symbol": symbol})
     return {
         "price": float(d["lastPrice"]),
         "change_24h": float(d["priceChangePercent"]),
