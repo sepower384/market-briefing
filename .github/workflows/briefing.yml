@@ -1,0 +1,65 @@
+# 컴퓨터를 꺼도 돌아가는 경로 — GitHub Actions 무료 러너에서 주기 실행.
+#
+# 준비물 딱 하나:
+#   저장소 Settings > Secrets and variables > Actions > New repository secret
+#   Name: SLACK_WEBHOOK_URL
+#   Value: https://hooks.slack.com/services/...
+#
+# 공개(public) 저장소면 Actions 사용시간 무제한 무료.
+name: market-briefing
+
+on:
+  schedule:
+    - cron: "0 */3 * * *"      # 3시간 정기 브리핑 (UTC 3h마다 = KST 00/03/06/09/12/15/18/21시)
+    - cron: "*/15 * * * *"     # 급등/급락 감시 (Actions는 지연이 있어 15분 권장)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "brief / watch / test"
+        default: "brief"
+
+concurrency:
+  group: market-briefing
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install requests
+
+      # 도미넌스 24h 변화는 이력을 쌓아야 계산되므로 state.json 을 실행 간에 물려준다.
+      - name: 상태 복원 (도미넌스 이력 + 알림 쿨다운)
+        uses: actions/cache@v4
+        with:
+          path: state.json
+          key: mb-state-${{ github.run_id }}
+          restore-keys: mb-state-
+
+      - name: 실행
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          PYTHONUTF8: "1"
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          if [ -z "$MODE" ]; then
+            if [ "${{ github.event.schedule }}" = "0 */3 * * *" ]; then MODE="brief"; else MODE="watch"; fi
+          fi
+          echo "mode=$MODE"
+          python briefing.py "$MODE"
+
+      # 슬랙이 막혔을 때 원문이 남는 outbox 를 아티팩트로 올려둔다(30일 보관).
+      - name: outbox 보관
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: outbox-${{ github.run_id }}
+          path: outbox/
+          if-no-files-found: ignore
+          retention-days: 30

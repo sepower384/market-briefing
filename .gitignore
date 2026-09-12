@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+bot_chrome/
+briefing.log
+outbox/
