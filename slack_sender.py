@@ -116,6 +116,10 @@ def send(cfg, text, blocks=None):
         try:
             if m == "webhook":
                 return send_webhook(url, text, blocks)
+            if pw.get("slack_channel_url") and not pw.get("chrome_user_data_dir"):
+                import slack_cdp
+                return slack_cdp.post(pw["slack_channel_url"], text,
+                                      cdp=pw.get("cdp_url", "http://127.0.0.1:9222"))
             return send_playwright(
                 pw.get("slack_channel_url", ""),
                 text,
