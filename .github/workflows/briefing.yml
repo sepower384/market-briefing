@@ -45,12 +45,14 @@ jobs:
       - name: 실행
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_WATCH: ${{ secrets.SLACK_WEBHOOK_WATCH }}   # 급등락 알림 전용 채널(없으면 브리핑 채널로)
           PYTHONUTF8: "1"
         run: |
           MODE="${{ github.event.inputs.mode }}"
           if [ -z "$MODE" ]; then
             if [ "${{ github.event.schedule }}" = "0 */3 * * *" ]; then MODE="brief"; else MODE="watch"; fi
           fi
+          if [ "$MODE" = "watch" ] && [ -n "$SLACK_WEBHOOK_WATCH" ]; then export SLACK_WEBHOOK_URL="$SLACK_WEBHOOK_WATCH"; fi
           echo "mode=$MODE"
           python briefing.py "$MODE"
 
