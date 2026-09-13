@@ -9,9 +9,9 @@
 name: market-briefing
 
 on:
-  schedule:
-    - cron: "0 */3 * * *"      # 3시간 정기 브리핑 (UTC 3h마다 = KST 00/03/06/09/12/15/18/21시)
-    - cron: "*/15 * * * *"     # 급등/급락 감시 (Actions는 지연이 있어 15분 권장)
+  # 깃허브 schedule 은 붐비면 건너뛴다(24h 104회 중 12회만 돎, 2026-09-13 실측).
+  # 그래서 cron-job.org 가 workflow_dispatch API 로 깨운다:
+  #   mode=brief → KST 00/03/06/…/21시 정각,  mode=watch → 15분마다(07·22·37·52분)
   workflow_dispatch:
     inputs:
       mode:
