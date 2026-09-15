@@ -47,6 +47,23 @@ powershell -ExecutionPolicy Bypass -File C:\dev\market-briefing\set_webhook.ps1 
 백그라운드 3시간 자동실행에는 **방법 A가 훨씬 안정적**입니다.
 `"slack_mode": "auto"` 로 두면 웹훅 먼저 → 실패 시 Playwright로 넘어갑니다.
 
+### 텔레그램 동시 발송 (슬랙과 병행)
+환경변수(깃허브 Actions 는 Secrets)만 넣으면 슬랙과 같은 내용이 텔레그램 슈퍼그룹 토픽으로도 갑니다. 없으면 조용히 건너뜁니다.
+
+| 변수 | 뜻 |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | 공용 봇 토큰 (스트림별 토큰이 없을 때) |
+| `TELEGRAM_BOT_TOKEN_BRIEF` / `TELEGRAM_BOT_TOKEN_WATCH` | 스트림 전용 봇 토큰 (있으면 공용보다 우선) |
+| `TELEGRAM_CHAT_ID` | 슈퍼그룹 ID (`-100...`) |
+| `TELEGRAM_TOPIC_BRIEF` | 📊 세력의 시장 보고서 토픽 스레드 ID (정기 브리핑) |
+| `TELEGRAM_TOPIC_WATCH` | ⚡ 세력의 레이더망 토픽 스레드 ID (급등락 감시) |
+
+- 슬랙 mrkdwn 을 텔레그램 HTML 로 변환(`telegram_sender.py`)해 보내고, 4096자를 넘으면 섹션 경계로 나눠 1초 간격으로 보냅니다.
+- 사진은 quickchart.io 차트 URL(키 없음) 1장을 먼저 보내고, 실패해도 본문은 보냅니다. 브리핑=비트코인 7일, 감시=해당 종목 최근 흐름.
+- 어려운 용어는 `glossary.py` 용어집으로 처음 한 번만 풀어 씁니다.
+- 미리보기(전송 안 함, state.json 저장 안 함): `python briefing.py preview-telegram brief` / `... watch` → `outbox/preview_telegram_<mode>.html`, `outbox/preview_slack_<mode>.txt`
+- 테스트: `python -m pytest tests`
+
 ## 3. 연결 테스트
 ```
 python briefing.py test        # 슬랙에 테스트 메시지 1건

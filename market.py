@@ -220,6 +220,8 @@ def coin_snapshot(symbol, with_ta=True):
             "resistance": max(d1["high"][-20:]),
             "vol_ratio_1h": (h1["volume"][-1] / vol_base) if vol_base > 0 else None,
         }
+        # 텔레그램 차트 이미지용(최근 7일 1시간봉). 추가 API 호출 없이 이미 받은 캔들을 재사용.
+        out["chart_1h"] = {"close": c1[-168:], "time": h1["time"][-168:]}
     except Exception as e:
         out["ta"] = None
         out["ta_error"] = str(e)
@@ -348,6 +350,9 @@ def stock_quick(ticker):
             "change_day": chg,
             "market_state": ch["meta"].get("marketState", ""),
             "currency": ch["meta"].get("currency", ""),
+            # 텔레그램 차트 이미지용(최근 한 달 일봉, epoch 밀리초)
+            "chart_1d": {"close": ch["close"],
+                         "time": [(t * 1000 if t else None) for t in (ch.get("time") or [])]},
         }
     except Exception:
         return None

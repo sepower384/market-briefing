@@ -46,6 +46,13 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SLACK_WEBHOOK_WATCH: ${{ secrets.SLACK_WEBHOOK_WATCH }}   # 급등락 알림 전용 채널(없으면 브리핑 채널로)
+          # 텔레그램(슬랙과 동시 발송). 없으면 조용히 건너뜀. 스트림별 토큰이 있으면 공용 토큰보다 우선.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN_BRIEF: ${{ secrets.TELEGRAM_BOT_TOKEN_BRIEF }}   # 📊 세력의 시장 보고서 봇
+          TELEGRAM_BOT_TOKEN_WATCH: ${{ secrets.TELEGRAM_BOT_TOKEN_WATCH }}   # ⚡ 세력의 레이더망 봇
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_TOPIC_BRIEF: ${{ secrets.TELEGRAM_TOPIC_BRIEF }}
+          TELEGRAM_TOPIC_WATCH: ${{ secrets.TELEGRAM_TOPIC_WATCH }}
           PYTHONUTF8: "1"
         run: |
           MODE="${{ github.event.inputs.mode }}"
