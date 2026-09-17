@@ -171,6 +171,30 @@ class DeliverTest(unittest.TestCase):
             self.assertEqual(p["chat_id"], "-100123")
         self.assertIn(1, sleeps)  # 조각 사이 1초
 
+    def test_extra_channels_use_channel_bot(self):
+        calls = []
+
+        def post(url, json=None, timeout=None):
+            calls.append((url, json))
+            if json["chat_id"] == "-100bad":
+                return FakeResp(400, {"ok": False, "error_code": 400, "description": "chat not found"})
+            return FakeResp(200, {"ok": True})
+
+        env = dict(self.ENV, TELEGRAM_BOT_TOKEN_BRIEF="brief-bot", TELEGRAM_CHANNEL_BOT_TOKEN="mgr-bot",
+                   TELEGRAM_CHANNEL_CHATS_BRIEF="-100a, -100bad")
+        ok, msg = tg.deliver("brief", "본문", env=env, post=post, sleep=lambda s: None)
+        self.assertTrue(ok)                                     # 추가 채널 실패는 결과에 영향 없음
+        by_chat = [(c[0].split("/bot")[1].split("/")[0], c[1]["chat_id"]) for c in calls]
+        self.assertEqual(by_chat[0], ("brief-bot", "-100123"))
+        self.assertIn(("mgr-bot", "-100a"), by_chat)
+        self.assertNotIn("message_thread_id", [k for c in calls if c[1]["chat_id"] == "-100a" for k in c[1]])
+        self.assertIn("-100a 완료", msg)
+        self.assertIn("-100bad 실패", msg)
+        # watch 스트림은 채널 설정이 없으니 기본 대상만
+        calls.clear()
+        tg.deliver("watch", "본문", env=env, post=post, sleep=lambda s: None)
+        self.assertEqual({c[1]["chat_id"] for c in calls}, {"-100123"})
+
     def test_429_retry_once(self):
         seq = [FakeResp(429, {"ok": False, "error_code": 429, "parameters": {"retry_after": 3}}),
                FakeResp(200, {"ok": True})]

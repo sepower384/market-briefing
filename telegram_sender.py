@@ -9,6 +9,8 @@ telegram_sender.py - 텔레그램 슈퍼그룹 토픽으로 보내는 전송기 
   TELEGRAM_CHAT_ID            슈퍼그룹 ID (-100...)
   TELEGRAM_TOPIC_BRIEF        📊 세력의 시장 보고서 토픽 스레드 ID
   TELEGRAM_TOPIC_WATCH        ⚡ 세력의 레이더망 토픽 스레드 ID
+  TELEGRAM_CHANNEL_CHATS_<STREAM>  같은 내용을 추가로 올릴 채널들(쉼표). 예: 브리핑을 세력 채널에도
+  TELEGRAM_CHANNEL_BOT_TOKEN       그 채널에 관리자로 들어가 있는 봇 토큰(세력의 매니저). 없으면 스트림 토큰
 
 토큰이나 채팅 ID 가 없으면 조용히 건너뛴다. 토픽 ID 가 없으면 그룹의 기본(General) 스레드로 보낸다.
 """
@@ -230,16 +232,19 @@ def send_photo(conf, photo_url, caption="", post=None, sleep=time.sleep):
     return _call(conf["token"], "sendPhoto", payload, timeout=PHOTO_TIMEOUT, post=post, sleep=sleep)
 
 
-def deliver(stream, html_text, photo_url=None, photo_caption=None, env=None, post=None, sleep=time.sleep):
-    """
-    사진(선택) 먼저, 본문은 분할해서 1초 간격으로. 반환 (ok, 메시지)
-      ok=None  → 설정이 없어 건너뜀
-      ok=True  → 본문 전송 완료 (사진 실패는 무시)
-      ok=False → 본문 전송 실패
-    """
-    conf = stream_config(stream, env)
-    if conf is None:
-        return None, "텔레그램 설정 없음 - 건너뜀"
+def channel_configs(stream, env=None):
+    """추가 발행 채널 설정 목록 (채널 글은 봇 이름이 아니라 채널 이름으로 보이므로 관리자 봇 토큰을 쓴다)."""
+    env = os.environ if env is None else env
+    key = (stream or "").upper()
+    chats = [c.strip() for c in (env.get("TELEGRAM_CHANNEL_CHATS_%s" % key) or "").split(",") if c.strip()]
+    base = stream_config(stream, env) or {}
+    token = (env.get("TELEGRAM_CHANNEL_BOT_TOKEN") or "").strip() or base.get("token")
+    if not token:
+        return []
+    return [{"token": token, "chat_id": c, "thread_id": None} for c in chats]
+
+
+def _deliver_to(conf, html_text, photo_url, photo_caption, post, sleep):
     note = ""
     if photo_url:
         try:
@@ -248,11 +253,34 @@ def deliver(stream, html_text, photo_url=None, photo_caption=None, env=None, pos
         except Exception as e:  # 사진은 실패해도 본문은 반드시 보낸다
             note = " (사진 생략: %s)" % str(e)[:120]
     chunks = split_html(html_text)
+    for i, chunk in enumerate(chunks):
+        if i:
+            sleep(1)
+        send_message(conf, chunk, post=post, sleep=sleep)
+    return len(chunks), note
+
+
+def deliver(stream, html_text, photo_url=None, photo_caption=None, env=None, post=None, sleep=time.sleep):
+    """
+    사진(선택) 먼저, 본문은 분할해서 1초 간격으로. 반환 (ok, 메시지)
+      ok=None  → 설정이 없어 건너뜀
+      ok=True  → 본문 전송 완료 (사진 실패는 무시)
+      ok=False → 본문 전송 실패
+    기본 대상(TELEGRAM_CHAT_ID) 다음에 추가 채널(TELEGRAM_CHANNEL_CHATS_<STREAM>)에도 보낸다.
+    추가 채널 실패는 결과(ok)에 영향을 주지 않고 메시지에만 적는다.
+    """
+    conf = stream_config(stream, env)
+    if conf is None:
+        return None, "텔레그램 설정 없음 - 건너뜀"
     try:
-        for i, chunk in enumerate(chunks):
-            if i:
-                sleep(1)
-            send_message(conf, chunk, post=post, sleep=sleep)
+        n, note = _deliver_to(conf, html_text, photo_url, photo_caption, post, sleep)
     except Exception as e:
-        return False, "텔레그램 전송 실패(%s)%s" % (e, note)
-    return True, "텔레그램 전송 완료 %d건%s" % (len(chunks), note)
+        return False, "텔레그램 전송 실패(%s)" % e
+    extra = []
+    for ch in channel_configs(stream, env):
+        try:
+            _deliver_to(ch, html_text, photo_url, photo_caption, post, sleep)
+            extra.append("%s 완료" % ch["chat_id"])
+        except Exception as e:
+            extra.append("%s 실패(%s)" % (ch["chat_id"], str(e)[:80]))
+    return True, "텔레그램 전송 완료 %d건%s%s" % (n, note, (" / 채널: " + ", ".join(extra)) if extra else "")

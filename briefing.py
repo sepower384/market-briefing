@@ -622,9 +622,10 @@ def cmd_test(cfg):
         log("슬랙 테스트 발송 완료")
     except Exception as e:
         log("슬랙 테스트 실패: %s" % e)
-    for stream in ("brief", "watch"):
+    no_channels = {k: v for k, v in os.environ.items() if not k.startswith("TELEGRAM_CHANNEL_")}
+    for stream in ("brief", "watch"):   # 연결 테스트는 채널(구독자)에는 안 보낸다
         ok, msg = tg.deliver(stream, "✅ <b>%s</b> 연결 테스트에 성공했습니다. %s이 이 토픽으로 소식을 보내 드립니다."
-                             % (tg.esc(STREAM_TITLE[stream]), BOT_NAME))
+                             % (tg.esc(STREAM_TITLE[stream]), BOT_NAME), env=no_channels)
         log("텔레그램 테스트 [%s] - %s" % (stream, msg))
 
 

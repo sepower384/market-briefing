@@ -53,6 +53,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_TOPIC_BRIEF: ${{ secrets.TELEGRAM_TOPIC_BRIEF }}
           TELEGRAM_TOPIC_WATCH: ${{ secrets.TELEGRAM_TOPIC_WATCH }}
+          TELEGRAM_CHANNEL_CHATS_BRIEF: ${{ secrets.TELEGRAM_CHANNEL_CHATS_BRIEF }}   # 브리핑을 세력 채널에도
+          TELEGRAM_CHANNEL_BOT_TOKEN: ${{ secrets.TELEGRAM_CHANNEL_BOT_TOKEN }}       # 채널 관리자 봇(세력의 매니저)
           PYTHONUTF8: "1"
         run: |
           MODE="${{ github.event.inputs.mode }}"
