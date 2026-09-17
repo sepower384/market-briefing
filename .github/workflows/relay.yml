@@ -1,0 +1,33 @@
+# 회장님 전용 콘텐츠 레이더(PC의 C:\dev\content-radar)가 부르는 발송 전용 워크플로.
+# payload 는 암호문이라 공개 실행 기록에 내용이 드러나지 않는다(키: Secret CONTENT_RELAY_KEY).
+name: 전용 메시지 중계
+
+on:
+  workflow_dispatch:
+    inputs:
+      payload:
+        description: "암호화된 메시지(content-radar 가 생성)"
+        required: true
+
+concurrency:
+  group: relay
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests cryptography
+      - name: 복호화 후 텔레그램 발송
+        env:
+          RELAY_PAYLOAD: ${{ github.event.inputs.payload }}
+          CONTENT_RELAY_KEY: ${{ secrets.CONTENT_RELAY_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN_WATCH: ${{ secrets.TELEGRAM_BOT_TOKEN_WATCH }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python relay_send.py WATCH
