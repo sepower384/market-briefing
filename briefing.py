@@ -416,83 +416,162 @@ def brief_photo(data):
 
 
 # ------------------------------------------------------------------ 급등락 감시
-def check_alerts(cfg, state):
-    """임계치를 넘은 종목만 골라낸다. 쿨다운으로 도배 방지."""
-    a = cfg["alerts"]
-    cooldown = dt.timedelta(minutes=a.get("cooldown_minutes", 60))
-    now = dt.datetime.utcnow()
-    fired = []
+def ladder(base, steps):
+    """알림 단계: 기준값 + 그보다 큰 계단들. ladder(7, (10, 15)) -> [7, 10, 15]"""
+    return sorted(set([base] + [s for s in steps if s > base]))
 
-    def allow(key):
-        last = state["alerts"].get(key)
-        if last and now - dt.datetime.fromisoformat(last) < cooldown:
+
+COIN_STEPS = (10, 15, 20, 30, 50, 100)
+STOCK_STEPS = (7, 10, 15, 20, 30)
+INDEX_STEPS = (3, 4, 5, 7, 10)
+DOM_STEPS = (1.0, 1.5, 2.0, 3.0)
+
+
+class AlertMemory(object):
+    """같은 움직임을 한 번만 알리는 기억장치 (state.json 안에 저장).
+
+    - escalate: '24시간 +7%' 처럼 계속 유지되는 값은 쿨다운으로 막으면 하루 종일 반복된다.
+      그래서 **새 계단(7→10→15%)에 올라설 때만** 알리고, 기준의 60% 아래로 식으면 초기화한다.
+    - cooldown: '1시간 +3%' 처럼 금방 사라지는 값은 쿨다운으로 충분하다.
+    """
+
+    def __init__(self, state, now=None):
+        self.now = now or dt.datetime.utcnow()
+        self.levels = state.setdefault("levels", {})
+        self.alerts = state.setdefault("alerts", {})
+        # 오래된 기록 정리(거래일 키가 무한히 쌓이지 않도록)
+        for k in list(self.levels):
+            try:
+                if self.now - dt.datetime.fromisoformat(self.levels[k]["t"]) > dt.timedelta(days=3):
+                    del self.levels[k]
+            except Exception:
+                del self.levels[k]
+
+    def escalate(self, key, value, steps, reset_ratio=0.6, expire_h=None):
+        """value(>=0)가 새 계단에 닿았으면 그 계단을, 아니면 None."""
+        rec = self.levels.get(key)
+        if rec and expire_h and self.now - dt.datetime.fromisoformat(rec["t"]) > dt.timedelta(hours=expire_h):
+            rec = None
+            self.levels.pop(key, None)
+        if value < steps[0] * reset_ratio:
+            self.levels.pop(key, None)
+            return None
+        hits = [s for s in steps if s <= value]
+        if not hits or (rec and rec["lvl"] >= hits[-1]):
+            return None
+        reached = hits[-1]
+        self.levels[key] = {"lvl": reached, "t": self.now.isoformat()}
+        return reached
+
+    def cooldown(self, key, minutes):
+        last = self.alerts.get(key)
+        if last and self.now - dt.datetime.fromisoformat(last) < dt.timedelta(minutes=minutes):
             return False
-        state["alerts"][key] = now.isoformat()
+        self.alerts[key] = self.now.isoformat()
         return True
 
-    # 코인
+
+def _both_ways(mem, key, signed, steps, **kw):
+    """상승/하락 계단을 따로 관리. 반대 방향 기억은 자동으로 식는다."""
+    up = mem.escalate(key + ":up", max(signed, 0), steps, **kw)
+    down = mem.escalate(key + ":down", max(-signed, 0), steps, **kw)
+    return up or down
+
+
+def check_alerts(cfg, state, now=None):
+    """새로 알릴 만한 움직임만 골라낸다. 같은 움직임 반복 알림은 AlertMemory 가 막는다."""
+    a = cfg["alerts"]
+    mem = AlertMemory(state, now)
+    cool_1h = a.get("cooldown_minutes", 90)
+    fired = []
+
+    # 코인 — 비트코인 등락을 기준으로 '혼자 움직였는지'도 같이 본다
+    snaps = []
     for c in cfg["coins"]:
         try:
             s = mk.coin_snapshot(c["symbol"], with_ta=True)
         except Exception:
             continue
-        if s.get("error"):
-            continue
-        ch1, ch24 = s.get("change_1h"), s.get("change_24h")
-        hit = None
-        if ch1 is not None and abs(ch1) >= a["coin_1h_pct"]:
-            hit = "급등" if ch1 > 0 else "급락"
-        if ch24 is not None and abs(ch24) >= a["coin_24h_pct"]:
-            hit = "급등" if ch24 > 0 else "급락"
-        if hit:
-            direction = "up" if (ch1 or ch24 or 0) > 0 else "down"
-            if allow("coin:%s:%s" % (c["symbol"], direction)):
-                ta = s.get("ta") or {}
-                fired.append({
-                    "kind": "coin", "name": c["name"], "symbol": c["symbol"], "hit": hit,
-                    "icon": "🚨" if hit == "급락" else "🚀",
-                    "price": fmt_price(s["price"]),
-                    "ch1": ch1 if ch1 is not None and abs(ch1) >= a["coin_1h_pct"] else None,
-                    "ch24": ch24 if ch24 is not None and abs(ch24) >= a["coin_24h_pct"] else None,
-                    "vol_ratio": ta.get("vol_ratio_1h"),
-                    "verdict": mk.read_signal(s)["verdict"],
-                    "support": ta.get("support"), "resistance": ta.get("resistance"),
-                    "chart": s.get("chart_1h"),
-                })
+        if not s.get("error"):
+            snaps.append((c, s))
+    btc = next((s for c, s in snaps if c["symbol"].upper().startswith("BTC")), None)
 
-    # 도미넌스
+    for c, s in snaps:
+        ch1, ch24 = s.get("change_1h"), s.get("change_24h")
+        lvl = None
+        if ch24 is not None:
+            lvl = _both_ways(mem, "coin24:%s" % c["symbol"], ch24,
+                             ladder(a["coin_24h_pct"], COIN_STEPS), expire_h=24)
+        fast = None
+        if ch1 is not None and abs(ch1) >= a["coin_1h_pct"]:
+            if mem.cooldown("coin1h:%s:%s" % (c["symbol"], "up" if ch1 > 0 else "down"), cool_1h):
+                fast = ch1
+        if lvl is None and fast is None:
+            continue
+        lead = fast if fast is not None else ch24
+        ta = s.get("ta") or {}
+        is_btc = s is btc
+        fired.append({
+            "kind": "coin", "name": c["name"], "symbol": c["symbol"],
+            "hit": "급등" if lead > 0 else "급락", "icon": "🚀" if lead > 0 else "🚨",
+            "price": fmt_price(s["price"]), "price_raw": s["price"],
+            "ch1": ch1, "ch24": ch24, "fast": fast is not None, "level": lvl,
+            "btc_ch24": None if (is_btc or not btc) else btc.get("change_24h"),
+            "vol_ratio": ta.get("vol_ratio_1h"),
+            "verdict": mk.read_signal(s)["verdict"],
+            "support": ta.get("support"), "resistance": ta.get("resistance"),
+            "chart": s.get("chart_1h"),
+        })
+
+    # 도미넌스 — 줄어드는 계단만 (0.5 → 1.0 → 1.5%p)
     try:
         dom = mk.dominance()
         dd = dominance_delta(state, dom, 24)
-        if dd is not None and dd <= -abs(a["dominance_drop_24h_pp"]):
-            if allow("dominance:down"):
+        if dd is not None:
+            steps = ladder(abs(a["dominance_drop_24h_pp"]), DOM_STEPS)
+            if mem.escalate("dom:down", max(-dd, 0), steps, reset_ratio=0.5, expire_h=24):
                 fired.append({"kind": "dominance", "icon": "🟢", "btc": dom["btc"], "dd": dd,
                               "total": dom["total_mcap_usd"]})
     except Exception:
         pass
 
-    # 주식
+    # 주식 — 정규장 중에만. 장이 닫힌 뒤의 '오늘 등락'은 지난 거래일 숫자라 다시 알릴 이유가 없다.
     for lst in (cfg["us_stocks"], cfg["kr_stocks"]):
         for s in lst:
             q = mk.stock_quick(s["ticker"])
             if not q or q.get("change_day") is None:
                 continue
+            if (q.get("market_state") or "").upper() != "REGULAR":
+                continue
             is_index = s["ticker"].startswith("^")
             thr = a["index_day_pct"] if is_index else a["stock_day_pct"]
             ch = q["change_day"]
-            if abs(ch) < thr:
-                continue
-            direction = "up" if ch > 0 else "down"
-            if not allow("stock:%s:%s" % (s["ticker"], direction)):
+            steps = ladder(thr, INDEX_STEPS if is_index else STOCK_STEPS)
+            lvl = _both_ways(mem, "stock:%s:%s" % (s["ticker"], q.get("session_date") or ""), ch, steps)
+            if not lvl:
                 continue
             shown = ("{:,.2f}p".format(q["price"]) if is_index
                      else fmt_price(q["price"], q.get("currency", "USD")))
             fired.append({
                 "kind": "stock", "name": s["name"], "ticker": s["ticker"],
                 "hit": "급등" if ch > 0 else "급락", "icon": "🚨" if ch < 0 else "🚀",
-                "price": shown, "ch": ch, "market_state": q.get("market_state", ""),
+                "price": shown, "ch": ch, "level": lvl, "market_state": q.get("market_state", ""),
                 "chart": q.get("chart_1d"),
             })
+    return fired
+
+
+def attach_news(fired, lookup=None, limit=4):
+    """코인·주식 알림마다 '왜 움직였나' 뉴스 1건을 붙인다(실패해도 알림은 나간다)."""
+    if lookup is None:
+        import news_lookup
+        lookup = news_lookup.headline
+    for f in [f for f in fired if f.get("kind") in ("coin", "stock")][:limit]:
+        try:
+            q = f["name"] + (" 주가" if f["kind"] == "stock" and not f["ticker"].startswith("^") else "")
+            f["news"] = lookup(f["name"], q)
+        except Exception:
+            f["news"] = None
     return fired
 
 
@@ -508,21 +587,16 @@ def build_alert(cfg, fired, note=None):
         kind = f.get("kind")
         if kind == "coin":
             lines.append("%s *%s %s %s*" % (f["icon"], f["name"], f["hit"], f["price"]))
-            moves = []
-            if f.get("ch1") is not None:
-                moves.append("1시간 만에 %s" % fmt_pct(f["ch1"]))
-            if f.get("ch24") is not None:
-                moves.append("하루 동안 %s" % fmt_pct(f["ch24"]))
-            if moves:
-                lines.append("     👉 %s 움직였습니다." % ", ".join(moves))
+            lines.append("     👉 " + coin_move_line(f))
+            rel = relative_line(f)
+            if rel:
+                lines.append("     👉 " + rel)
             if f.get("vol_ratio") and f["vol_ratio"] >= 2:
                 lines.append("     👉 %s도 평소의 %.1f배로 늘었습니다. 실제로 사고파는 사람이 몰렸다는 뜻입니다."
                              % (ex.t("거래량"), f["vol_ratio"]))
-            ref = "     👉 참고로 큰 흐름은 %s." % verdict_kr(f.get("verdict"))
-            if f.get("support") and f.get("resistance"):
-                ref += " %s은 %s, %s은 %s입니다." % (
-                    ex.t("지지선"), fmt_price(f["support"]), ex.t("저항선"), fmt_price(f["resistance"]))
-            lines.append(ref)
+            lvl = level_line(f, ex)
+            lines.append("     👉 큰 흐름은 %s.%s" % (verdict_kr(f.get("verdict")), (" " + lvl) if lvl else ""))
+            lines += news_lines(f)
         elif kind == "dominance":
             lines.append("%s *비트코인 비중 하락 %.2f%%*" % (f["icon"], f["btc"]))
             lines.append("     👉 %s가 24시간 동안 %s 줄었습니다. %s으로 돈이 옮겨가는 신호일 수 있습니다." % (
@@ -531,17 +605,78 @@ def build_alert(cfg, fired, note=None):
                 ex.t("시가총액"), f["total"] / 1e12))
         elif kind == "stock":
             lines.append("%s *%s %s %s*" % (f["icon"], f["name"], f["hit"], f["price"]))
-            lines.append("     👉 오늘 하루 %s 움직였습니다." % fmt_pct(f["ch"]))
+            step = (" 오늘 %s%% 선을 새로 넘었습니다." % _num(f["level"])) if f.get("level") else ""
+            lines.append("     👉 오늘 하루 %s 움직였습니다.%s" % (fmt_pct(f["ch"]), step))
             state_txt = MARKET_STATE_KR.get((f.get("market_state") or "").upper())
             if state_txt:
                 for term in ("정규장", "프리마켓", "애프터마켓"):
                     if "{%s}" % term in state_txt:  # 실제로 쓰일 때만 '설명함'으로 표시
                         state_txt = state_txt.replace("{%s}" % term, ex.t(term))
                 lines.append("     👉 참고로 %s." % state_txt)
+            lines += news_lines(f)
         lines.append("")
-    lines.append("_급하게 따라 사거나 팔기보다는, 왜 움직였는지 뉴스부터 확인해 보시는 것이 좋아 보입니다._")
+    lines.append("_같은 움직임은 더 커질 때(예: 7%→10%→15%)만 다시 알려 드립니다. "
+                 "급하게 따라 사거나 팔기보다는 이유부터 확인해 보시는 것이 좋아 보입니다._")
     text = "\n".join(lines)
     return text, to_blocks(text)
+
+
+def _num(v):
+    return ("%g" % v)
+
+
+def coin_move_line(f):
+    ch1, ch24 = f.get("ch1"), f.get("ch24")
+    if f.get("fast") and ch1 is not None:
+        s = "최근 1시간 만에 %s 움직였습니다." % fmt_pct(ch1)
+        if ch24 is not None:
+            s += " 하루 기준으로는 %s입니다." % fmt_pct(ch24)
+        return s
+    s = "하루 동안 %s 움직였습니다." % fmt_pct(ch24)
+    if ch1 is not None and abs(ch1) >= 0.5:
+        s += " 최근 1시간은 %s입니다." % fmt_pct(ch1)
+    if f.get("level"):
+        s += " 이번 움직임에서 %s%% 선을 새로 넘었습니다." % _num(f["level"])
+    return s
+
+
+def relative_line(f):
+    """비트코인과 비교해 '혼자 움직였나, 시장 전체인가'."""
+    me, b = f.get("ch24"), f.get("btc_ch24")
+    if me is None or b is None or abs(me) < 1:
+        return None
+    if me * b > 0 and abs(b) >= abs(me) * 0.5:
+        return "같은 시간 비트코인도 %s 움직여, 시장 전체 흐름으로 보입니다." % fmt_pct(b)
+    return "같은 시간 비트코인은 %s라, %s만 따로 움직인 것으로 보입니다." % (fmt_pct(b), f["name"])
+
+
+def level_line(f, ex):
+    """지지·저항까지 남은 거리. 멀리 있는 숫자 두 개보다 '얼마나 남았나'가 쓸모 있다."""
+    p, sup, res = f.get("price_raw"), f.get("support"), f.get("resistance")
+    if not p or not sup or not res:
+        if sup and res:
+            return "%s은 %s, %s은 %s입니다." % (ex.t("지지선"), fmt_price(sup), ex.t("저항선"), fmt_price(res))
+        return ""
+    if p >= res * 0.999:
+        return "최근 20일 최고가(%s) 위로 올라서, 위쪽에 막히는 자리가 없는 구간입니다." % fmt_price(res)
+    if p <= sup * 1.001:
+        return "최근 20일 최저가(%s) 아래로 내려가, 아래쪽 받쳐 줄 자리가 없는 구간입니다." % fmt_price(sup)
+    if f.get("hit") == "급등":
+        return "%s %s까지 %.1f%% 남았습니다." % (ex.t("저항선"), fmt_price(res), (res / p - 1) * 100)
+    return "%s %s까지 %.1f%% 남았습니다." % (ex.t("지지선"), fmt_price(sup), (1 - sup / p) * 100)
+
+
+def news_lines(f):
+    if "news" not in f:
+        return []
+    n = f.get("news")
+    if not n:
+        return ["     📰 지금 이 움직임을 설명하는 뉴스는 보이지 않습니다. "
+                "뉴스 없이 움직였다면 되돌림도 빠를 수 있어 주의하시는 것이 좋아 보입니다."]
+    age = n.get("age_h")
+    when = "" if age is None else (" · 방금" if age < 1 else " · %d시간 전" % int(age))
+    title = n["title"].replace("|", "·").replace("<", "‹").replace(">", "›")
+    return ["     📰 이유로 보이는 뉴스: <%s|%s> (%s%s)" % (n["url"], title, n.get("source", ""), when)]
 
 
 def alert_photo(fired):
@@ -606,8 +741,9 @@ def cmd_watch(cfg, send=True):
     fired = check_alerts(cfg, state)
     save_state(state)
     if not fired:
-        log("감시: 임계치 초과 없음")
+        log("감시: 새로 알릴 움직임 없음")
         return None
+    attach_news(fired)
     text, blocks = build_alert(cfg, fired)
     if send:
         ok, msg = slack_sender.send_or_archive(cfg, text, blocks, tag="alert")
@@ -644,13 +780,15 @@ def build_preview(cfg, mode):
         if not fired:
             # 지금 임계치를 넘은 게 없으면, 코인 임계치를 0으로 낮춰 가장 크게 움직인 코인으로 샘플을 만든다.
             c2 = copy.deepcopy(cfg)
-            c2["alerts"].update({"coin_1h_pct": 0, "coin_24h_pct": 0, "stock_day_pct": 999,
+            c2["alerts"].update({"coin_1h_pct": 999, "coin_24h_pct": 0, "stock_day_pct": 999,
                                  "index_day_pct": 999, "dominance_drop_24h_pp": 999, "cooldown_minutes": 0})
             c2["us_stocks"], c2["kr_stocks"] = [], []
-            fired = check_alerts(c2, copy.deepcopy(state))
+            c2["alerts"]["coin_24h_pct"] = 0.01
+            fired = check_alerts(c2, {"alerts": {}, "levels": {}})
             fired.sort(key=lambda f: -abs(f.get("ch24") or f.get("ch1") or 0))
             fired = fired[:2]
             note = "미리보기 샘플: 지금은 기준을 넘은 종목이 없어 가장 크게 움직인 코인으로 만들었습니다."
+        attach_news(fired)
         text, _ = build_alert(cfg, fired, note=note)
         photo = safe_photo(alert_photo, fired)
     return text, photo, note

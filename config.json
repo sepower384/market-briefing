@@ -50,7 +50,7 @@
     "stock_day_pct": 4.0,
     "index_day_pct": 2.0,
     "dominance_drop_24h_pp": 0.5,
-    "cooldown_minutes": 60
+    "cooldown_minutes": 90
   },
 
   "briefing": {

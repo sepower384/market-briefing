@@ -350,6 +350,8 @@ def stock_quick(ticker):
             "change_day": chg,
             "market_state": ch["meta"].get("marketState", ""),
             "currency": ch["meta"].get("currency", ""),
+            # 같은 거래일의 등락을 한 번만 알리기 위한 키
+            "session_date": _session_date(ch["meta"].get("regularMarketTime"), ch["meta"].get("gmtoffset", 0)),
             # 텔레그램 차트 이미지용(최근 한 달 일봉, epoch 밀리초)
             "chart_1d": {"close": ch["close"],
                          "time": [(t * 1000 if t else None) for t in (ch.get("time") or [])]},
